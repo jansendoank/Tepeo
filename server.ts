@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -295,19 +296,36 @@ app.get('/api/spam/stream', (req, res) => {
 
 // Vite & Static file handling
 async function setupServer() {
-  const isProd = process.env.NODE_ENV === 'production';
+  const possibleDistPaths = [
+    path.resolve(process.cwd(), 'dist'),
+    path.resolve(__dirname, 'dist'),
+    path.resolve(__dirname),
+  ];
 
-  if (!isProd) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+  const distPath = possibleDistPaths.find(
+    (p) => fs.existsSync(p) && fs.existsSync(path.join(p, 'index.html'))
+  );
+
+  if (distPath && process.env.NODE_ENV === 'production') {
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
+  } else {
+    try {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch {
+      if (distPath) {
+        app.use(express.static(distPath));
+        app.get('*', (req, res) => {
+          res.sendFile(path.join(distPath, 'index.html'));
+        });
+      }
+    }
   }
 
   app.listen(PORT, '0.0.0.0', () => {
