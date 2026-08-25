@@ -1,0 +1,6 @@
+{
+  "name": "Valora OTP Console",
+  "description": "Web dashboard and stress testing console ported from Valora-OTP (NEX-OTP) with live monitoring, platform selection, and testing tools.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
