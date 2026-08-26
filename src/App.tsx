@@ -1,43 +1,28 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   CheckCircle2,
   Clock,
-  Copy,
-  Cpu,
-  Flame,
-  Globe,
   Info,
   Layers,
-  Phone,
   Play,
   RefreshCw,
   Send,
-  Server,
   ShieldAlert,
-  Sliders,
   Smartphone,
   Square,
-  Terminal as TerminalIcon,
-  Trash2,
   Zap,
 } from 'lucide-react';
+import { KeyManagerModal } from './components/KeyManagerModal';
+import { LoginPage } from './components/LoginPage';
+import { Navbar } from './components/Navbar';
+import { LogEntry, TerminalView } from './components/TerminalView';
+import { AuthSession } from './types/auth';
 
 interface PlatformItem {
   id: number;
   name: string;
   category?: string;
-}
-
-interface LogEntry {
-  id: string;
-  round: number;
-  platform_id: number;
-  platform_name: string;
-  status: 'SUCCESS' | 'LIMIT' | 'FAIL' | 'TIMEOUT' | 'INFO';
-  detail: string;
-  timestamp: string;
 }
 
 interface Stats {
@@ -47,15 +32,6 @@ interface Stats {
   fail: number;
 }
 
-interface SystemInfo {
-  os: string;
-  node: string;
-  python: string;
-  cpu_cores: number;
-  public_ip: string;
-  ram: string;
-}
-
 interface Toast {
   id: string;
   message: string;
@@ -63,14 +39,19 @@ interface Toast {
 }
 
 export default function App() {
-  const [systemInfo, setSystemInfo] = useState<SystemInfo>({
-    os: 'Linux x86_64',
-    node: 'v22.x',
-    python: '3.11 Port',
-    cpu_cores: 4,
-    public_ip: 'Memuat...',
-    ram: 'Normal',
+  const [session, setSession] = useState<AuthSession | null>(() => {
+    const saved = localStorage.getItem('spammer_vip_session');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return null;
+      }
+    }
+    return null;
   });
+
+  const [showKeyManager, setShowKeyManager] = useState(false);
 
   const [platforms, setPlatforms] = useState<PlatformItem[]>([
     { id: 1, name: 'Internet Rakyat', category: 'ISP' },
@@ -90,8 +71,6 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [currentRound, setCurrentRound] = useState(0);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [filterStatus, setFilterStatus] = useState<string>('ALL');
-  const [autoScroll, setAutoScroll] = useState(true);
 
   const [stats, setStats] = useState<Stats>({
     total: 0,
@@ -113,7 +92,7 @@ export default function App() {
   ]);
 
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -122,6 +101,51 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4000);
   };
+
+  const handleLoginSuccess = (newSession: AuthSession) => {
+    setSession(newSession);
+    localStorage.setItem('spammer_vip_session', JSON.stringify(newSession));
+    showToast(`Selamat datang! Akses: ${newSession.role.toUpperCase()}`, 'success');
+  };
+
+  const handleLogout = async () => {
+    if (session?.token) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+      } catch {
+        // ignore
+      }
+    }
+    setSession(null);
+    localStorage.removeItem('spammer_vip_session');
+    showToast('Anda telah keluar.', 'info');
+  };
+
+  // Heartbeat verification: Auto-kick if expired or banned
+  useEffect(() => {
+    if (!session?.token) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/auth/verify', {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        const data = await res.json();
+        if (!data.valid) {
+          showToast(data.message || 'Masa aktif key telah habis! Anda dikeluarkan.', 'error');
+          setSession(null);
+          localStorage.removeItem('spammer_vip_session');
+        }
+      } catch {
+        // network issue
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [session]);
 
   const normalizePhone = (num: string): string => {
     let clean = num.replace(/\D/g, '');
@@ -143,9 +167,6 @@ export default function App() {
         const res = await fetch('/api/info');
         if (res.ok) {
           const data = await res.json();
-          if (data.system) {
-            setSystemInfo(data.system);
-          }
           if (data.platforms && Array.isArray(data.platforms) && data.platforms.length > 0) {
             setPlatforms(data.platforms);
             setSelectedPlatforms(data.platforms.map((p: any) => p.id));
@@ -203,12 +224,12 @@ export default function App() {
             showToast(`Proses selesai. Status: ${data.status}`, data.status === 'stopped' ? 'info' : 'success');
           }
         } catch {
-          // ignore parsing error
+          // ignore
         }
       };
 
       eventSource.onerror = () => {
-        // SSE disconnected or reconnecting
+        // reconnect
       };
     } catch {
       // ignore
@@ -222,10 +243,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (autoScroll && terminalEndRef.current) {
+    if (terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [logs, autoScroll]);
+  }, [logs]);
 
   const handleStart = async () => {
     if (!phoneNumber) {
@@ -315,19 +336,28 @@ export default function App() {
     showToast('Log berhasil disalin ke clipboard!', 'success');
   };
 
-  const filteredLogs = logs.filter((log) => {
-    if (filterStatus === 'ALL') return true;
-    return log.status === filterStatus;
-  });
+  // If user is not logged in, render dedicated full-screen Login Page
+  if (!session) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  }
 
   return (
     <div id="spammer-app" className="min-h-screen bg-[#070b12] text-slate-100 font-sans selection:bg-amber-400 selection:text-black flex flex-col relative overflow-x-hidden">
-      {/* Background Glow Accents inspired by bcb88ong luxury theme */}
+      {/* Background Glow Accents (bcb88ong theme) */}
       <div className="fixed inset-0 pointer-events-none z-0">
         <div className="absolute top-0 left-1/4 w-96 h-96 bg-amber-500/10 rounded-full blur-[120px]" />
         <div className="absolute top-1/3 right-10 w-80 h-80 bg-red-600/10 rounded-full blur-[140px]" />
         <div className="absolute bottom-10 left-1/3 w-96 h-96 bg-amber-600/5 rounded-full blur-[150px]" />
       </div>
+
+      {/* Key Management Modal */}
+      {showKeyManager && (
+        <KeyManagerModal
+          session={session}
+          onClose={() => setShowKeyManager(false)}
+          onShowToast={showToast}
+        />
+      )}
 
       {/* Toast Notifications */}
       <div id="toast-container" className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none">
@@ -351,65 +381,21 @@ export default function App() {
         ))}
       </div>
 
-      {/* Header */}
-      <header
-        id="main-navbar"
-        className="border-b border-amber-500/20 bg-[#0c121e]/90 backdrop-blur-md sticky top-0 z-40 shadow-xl shadow-black/40"
-      >
-        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 via-amber-500 to-red-600 flex items-center justify-center shadow-lg shadow-amber-500/25 ring-1 ring-amber-300/40">
-              <Flame className="w-5 h-5 text-black font-black animate-pulse" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-black tracking-widest text-lg sm:text-xl uppercase bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-500 bg-clip-text text-transparent drop-shadow">
-                  spammer
-                </span>
-                <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 font-mono font-bold uppercase tracking-wider shadow-sm">
-                  PRO VIP
-                </span>
-              </div>
-            </div>
-          </div>
+      {/* Navbar Component (Clean: No CPU/RAM/IP specs) */}
+      <Navbar
+        session={session}
+        isRunning={isRunning}
+        countdown={countdown}
+        currentRound={currentRound}
+        onOpenKeyManager={() => setShowKeyManager(true)}
+        onLogout={handleLogout}
+      />
 
-          <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono">
-            <div className="bg-[#111928] border border-amber-500/20 rounded-lg px-3 py-1.5 flex items-center gap-2 shadow-inner">
-              <Globe className="w-3.5 h-3.5 text-amber-400" />
-              <span className="text-slate-400 hidden sm:inline">IP:</span>
-              <span className="text-amber-300 font-semibold">{systemInfo.public_ip || 'Loading...'}</span>
-            </div>
-
-            <div className="bg-[#111928] border border-amber-500/20 rounded-lg px-3 py-1.5 hidden md:flex items-center gap-2 shadow-inner">
-              <Cpu className="w-3.5 h-3.5 text-amber-400" />
-              <span className="text-slate-400">RAM:</span>
-              <span className="text-amber-200 font-semibold">{systemInfo.ram?.split(' ')[0] || 'OK'}</span>
-            </div>
-
-            <div
-              id="status-indicator-badge"
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold font-mono tracking-wide flex items-center gap-2 border ${
-                isRunning
-                  ? 'bg-red-500/20 text-red-300 border-red-500/40 shadow-sm shadow-red-500/20'
-                  : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-              }`}
-            >
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  isRunning ? 'bg-red-400 animate-ping' : 'bg-emerald-400'
-                }`}
-              />
-              <span>{isRunning ? (countdown ? `JEDA (${countdown}s)` : `AKTIF (R-${currentRound})`) : 'SIAP'}</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Container */}
+      {/* Main Layout */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 relative z-10">
-        {/* Left Column: Controls & Configuration (5 cols) */}
+        {/* Left Column: Parameter Configuration (5 cols) */}
         <div id="panel-configuration" className="lg:col-span-5 flex flex-col gap-6">
-          {/* Control Panel Card */}
+          {/* Target Settings Box */}
           <div className="bg-[#0f172a]/90 border border-amber-500/30 rounded-2xl p-5 shadow-2xl relative overflow-hidden backdrop-blur-md">
             <div className="absolute top-0 right-0 w-36 h-36 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
@@ -626,7 +612,7 @@ export default function App() {
               )}
             </div>
 
-            {/* Updated Mandatory Disclaimer */}
+            {/* Disclaimer */}
             <div className="mt-4 p-3.5 bg-red-950/30 border border-red-800/50 rounded-xl flex items-start gap-2.5 text-xs text-red-200">
               <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
               <p className="leading-relaxed font-medium">
@@ -635,7 +621,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Statistics Card */}
+          {/* Stats Box */}
           <div className="bg-[#0f172a]/90 border border-amber-500/30 rounded-2xl p-5 shadow-xl">
             <h3 className="font-bold text-xs text-amber-300 uppercase tracking-wider mb-3.5 flex items-center gap-2">
               <Zap className="w-4 h-4 text-amber-400" />
@@ -662,146 +648,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Column: Live Terminal Stream & System Specs (7 cols) */}
+        {/* Right Column: Full Terminal Stream (7 cols) - NO Spesifikasi Mesin Server */}
         <div id="panel-monitoring" className="lg:col-span-7 flex flex-col gap-6">
-          {/* Terminal Window Card */}
-          <div id="terminal-wrapper" className="bg-[#0b101b] border border-amber-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col flex-1 min-h-[420px]">
-            {/* Terminal Window Header */}
-            <div className="bg-[#060a12] px-4 py-3 border-b border-amber-500/20 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-red-500" />
-                  <div className="w-3 h-3 rounded-full bg-amber-500" />
-                  <div className="w-3 h-3 rounded-full bg-emerald-500" />
-                </div>
-                <span className="text-xs font-mono text-slate-400 ml-2 font-medium flex items-center gap-1.5">
-                  <TerminalIcon className="w-3.5 h-3.5 text-amber-400" />
-                  spammer-stream.log
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                {countdown !== null && (
-                  <span className="text-[11px] font-mono font-bold text-amber-400 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded animate-pulse">
-                    Next Cycle: {countdown}s
-                  </span>
-                )}
-                {isRunning && (
-                  <span className="text-[11px] font-mono text-amber-400 flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-                    Round #{currentRound}
-                  </span>
-                )}
-                <button
-                  id="btn-clear-terminal-logs"
-                  type="button"
-                  onClick={clearLogs}
-                  className="text-xs font-mono text-slate-400 hover:text-slate-200 transition-colors bg-slate-900 border border-slate-800 hover:border-slate-700 px-2 py-1 rounded"
-                >
-                  Clear
-                </button>
-                <button
-                  id="btn-copy-terminal-logs"
-                  type="button"
-                  onClick={copyLogs}
-                  className="text-xs font-mono text-slate-400 hover:text-slate-200 transition-colors bg-slate-900 border border-slate-800 hover:border-slate-700 px-2 py-1 rounded"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Terminal Logs Area */}
-            <div
-              id="terminal-stream-body"
-              className="flex-1 p-4 bg-[#050810] font-mono text-xs overflow-y-auto space-y-1.5 max-h-[460px] min-h-[320px] select-text"
-            >
-              {filteredLogs.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-slate-600 py-16 text-center space-y-2">
-                  <TerminalIcon className="w-8 h-8 text-amber-500/30 animate-pulse" />
-                  <p className="text-xs">Terminal siap. Masukkan target & tekan tombol "JALANKAN PROSES".</p>
-                  <p className="text-[10px] text-slate-600">Real-time Server-Sent Events (SSE) aktif terhubung.</p>
-                </div>
-              ) : (
-                filteredLogs.map((log) => (
-                  <div
-                    key={log.id}
-                    className="flex items-start gap-2 leading-relaxed hover:bg-slate-900/60 px-2 py-1 rounded transition-colors"
-                  >
-                    <span className="text-slate-600 shrink-0 text-[10px] mt-0.5">[{log.timestamp}]</span>
-                    {log.round > 0 && <span className="text-amber-400 text-[10px] font-semibold shrink-0">R-{log.round}</span>}
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                        log.status === 'SUCCESS'
-                          ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                          : log.status === 'LIMIT'
-                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                            : log.status === 'FAIL'
-                              ? 'bg-red-950 text-red-400 border border-red-800'
-                              : 'bg-blue-950 text-blue-400 border border-blue-800'
-                      }`}
-                    >
-                      {log.status}
-                    </span>
-                    <span className="text-slate-300 font-semibold shrink-0">
-                      {log.platform_name}:
-                    </span>
-                    <span
-                      className={`break-all ${
-                        log.status === 'SUCCESS'
-                          ? 'text-emerald-300'
-                          : log.status === 'LIMIT'
-                            ? 'text-amber-300'
-                            : 'text-red-300'
-                      }`}
-                    >
-                      {log.detail}
-                    </span>
-                  </div>
-                ))
-              )}
-              <div ref={terminalEndRef} />
-            </div>
-          </div>
-
-          {/* System Information Card */}
-          <div className="bg-[#0f172a]/90 border border-amber-500/30 rounded-2xl p-5 shadow-lg">
-            <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider mb-3 flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-amber-400" />
-              Spesifikasi Mesin Server
-            </h3>
-            <div className="space-y-2.5 text-xs">
-              <div className="flex justify-between items-center py-2 border-b border-slate-800">
-                <span className="text-slate-400">Sistem Operasi:</span>
-                <span className="font-mono text-slate-200 font-semibold">{systemInfo.os || 'Linux'}</span>
-              </div>
-
-              <div className="flex justify-between items-center py-2 border-b border-slate-800">
-                <span className="text-slate-400">Runtime Engine:</span>
-                <span className="font-mono text-amber-300 font-semibold">Node.js {systemInfo.node || 'v20.x'}</span>
-              </div>
-
-              <div className="flex justify-between items-center py-2 border-b border-slate-800">
-                <span className="text-slate-400">CPU Core:</span>
-                <span className="font-mono text-slate-200 font-semibold">{systemInfo.cpu_cores || 1} Cores</span>
-              </div>
-
-              <div className="flex justify-between items-center py-2 border-b border-slate-800">
-                <span className="text-slate-400">Public IP:</span>
-                <span className="font-mono text-amber-300 font-semibold">{systemInfo.public_ip || '-'}</span>
-              </div>
-
-              <div className="flex justify-between items-center py-2 border-b border-slate-800">
-                <span className="text-slate-400">Memory Load:</span>
-                <span className="font-mono text-amber-400 font-semibold">{systemInfo.ram || '-'}</span>
-              </div>
-
-              <div className="flex justify-between items-center py-2">
-                <span className="text-slate-400">Total Provider Gateway:</span>
-                <span className="font-mono text-amber-300 font-bold">{platforms.length || 8} Platform</span>
-              </div>
-            </div>
-          </div>
+          <TerminalView
+            logs={logs}
+            isRunning={isRunning}
+            currentRound={currentRound}
+            countdown={countdown}
+            onClearLogs={clearLogs}
+            onCopyLogs={copyLogs}
+            terminalEndRef={terminalEndRef}
+          />
         </div>
       </main>
 

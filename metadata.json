@@ -1,6 +1,6 @@
 {
   "name": "Valora OTP Console",
-  "description": "Web dashboard and stress testing console ported from Valora-OTP (NEX-OTP) with live monitoring, platform selection, and testing tools.",
+  "description": "spammer PRO VIP - Web dashboard and stress testing console with multi-role license authentication and real-time live log monitoring.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
