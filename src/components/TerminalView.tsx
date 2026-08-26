@@ -1,5 +1,5 @@
 import React from 'react';
-import { Copy, Terminal as TerminalIcon } from 'lucide-react';
+import { Copy, Terminal as TerminalIcon, ShieldCheck } from 'lucide-react';
 
 export interface LogEntry {
   id: string;
@@ -9,6 +9,8 @@ export interface LogEntry {
   status: 'SUCCESS' | 'LIMIT' | 'FAIL' | 'TIMEOUT' | 'INFO';
   detail: string;
   timestamp: string;
+  target?: string;
+  proxy?: string;
 }
 
 interface TerminalViewProps {
@@ -16,6 +18,9 @@ interface TerminalViewProps {
   isRunning: boolean;
   currentRound: number;
   countdown: number | null;
+  currentTarget?: string;
+  targetProgress?: { current: number; total: number };
+  proxyEnabled?: boolean;
   onClearLogs: () => void;
   onCopyLogs: () => void;
   terminalEndRef: React.RefObject<HTMLDivElement | null>;
@@ -26,6 +31,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
   isRunning,
   currentRound,
   countdown,
+  currentTarget,
+  targetProgress,
+  proxyEnabled,
   onClearLogs,
   onCopyLogs,
   terminalEndRef,
@@ -33,7 +41,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
   return (
     <div id="terminal-wrapper" className="bg-[#0b101b] border border-amber-500/30 rounded-2xl shadow-2xl overflow-hidden flex flex-col flex-1 min-h-[560px]">
       {/* Header */}
-      <div className="bg-[#060a12] px-4 py-3 border-b border-amber-500/20 flex items-center justify-between">
+      <div className="bg-[#060a12] px-4 py-3 border-b border-amber-500/20 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5">
             <div className="w-3 h-3 rounded-full bg-red-500" />
@@ -44,9 +52,20 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
             <TerminalIcon className="w-3.5 h-3.5 text-amber-400" />
             spammer-live.log
           </span>
+          {proxyEnabled && (
+            <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-500/50 text-emerald-300">
+              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+              ROTATING PROXY
+            </span>
+          )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          {targetProgress && targetProgress.total > 1 && (
+            <span className="text-[11px] font-mono font-bold text-amber-300 bg-amber-950/80 border border-amber-600/60 px-2 py-0.5 rounded shadow-sm">
+              Target {targetProgress.current}/{targetProgress.total}
+            </span>
+          )}
           {countdown !== null && (
             <span className="text-[11px] font-mono font-bold text-amber-400 bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded animate-pulse">
               Next Cycle: {countdown}s
@@ -86,13 +105,17 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
           <div className="h-full flex flex-col items-center justify-center text-slate-600 py-24 text-center space-y-2">
             <TerminalIcon className="w-10 h-10 text-amber-500/30 animate-pulse" />
             <p className="text-xs">Terminal siap. Masukkan target & tekan tombol "JALANKAN PROSES".</p>
-            <p className="text-[10px] text-slate-600">Real-time Server-Sent Events (SSE) aktif terhubung.</p>
+            <p className="text-[10px] text-slate-600">Real-time Multi-Target Queue & Anti-Banned Proxy siap digunakan.</p>
           </div>
         ) : (
           logs.map((log) => (
             <div
               key={log.id}
-              className="flex items-start gap-2 leading-relaxed hover:bg-slate-900/60 px-2 py-1 rounded transition-colors"
+              className={`flex items-start gap-2 leading-relaxed px-2 py-1 rounded transition-colors ${
+                log.platform_name === 'TARGET QUEUE'
+                  ? 'bg-amber-500/10 border border-amber-500/30 text-amber-200 font-bold my-1'
+                  : 'hover:bg-slate-900/60'
+              }`}
             >
               <span className="text-slate-600 shrink-0 text-[10px] mt-0.5">[{log.timestamp}]</span>
               {log.round > 0 && <span className="text-amber-400 text-[10px] font-semibold shrink-0">R-{log.round}</span>}
@@ -118,7 +141,9 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
                     ? 'text-emerald-300'
                     : log.status === 'LIMIT'
                       ? 'text-amber-300'
-                      : 'text-red-300'
+                      : log.platform_name === 'TARGET QUEUE'
+                        ? 'text-amber-300'
+                        : 'text-red-300'
                 }`}
               >
                 {log.detail}

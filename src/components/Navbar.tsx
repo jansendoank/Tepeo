@@ -1,12 +1,20 @@
 import React from 'react';
-import { Flame, Key, LogOut } from 'lucide-react';
+import { Flame, Key, LogOut, ShieldCheck, Globe } from 'lucide-react';
 import { AuthSession } from '../types/auth';
+
+interface ProxyConfig {
+  enabled: boolean;
+  mode: 'auto' | 'custom';
+  customProxies: string[];
+}
 
 interface NavbarProps {
   session: AuthSession | null;
   isRunning?: boolean;
   countdown?: number | null;
   currentRound?: number;
+  proxyConfig?: ProxyConfig;
+  onOpenProxyManager?: () => void;
   onOpenKeyManager: () => void;
   onLogout: () => void;
 }
@@ -16,6 +24,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   isRunning = false,
   countdown = null,
   currentRound = 0,
+  proxyConfig,
+  onOpenProxyManager,
   onOpenKeyManager,
   onLogout,
 }) => {
@@ -43,7 +53,33 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         {/* Controls / Status */}
-        <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono">
+        <div className="flex items-center gap-2 sm:gap-3 text-xs font-mono">
+          {/* Proxy Rotator Button */}
+          {onOpenProxyManager && (
+            <button
+              id="btn-open-proxy-manager"
+              type="button"
+              onClick={onOpenProxyManager}
+              className={`border rounded-lg px-2.5 sm:px-3 py-1.5 flex items-center gap-1.5 font-bold transition-all cursor-pointer ${
+                proxyConfig?.enabled
+                  ? 'bg-emerald-950/40 border-emerald-500/60 text-emerald-300 hover:bg-emerald-900/40 shadow-sm shadow-emerald-500/20'
+                  : 'bg-slate-900/60 border-slate-700 text-slate-400 hover:border-amber-500/40 hover:text-slate-200'
+              }`}
+            >
+              <ShieldCheck
+                className={`w-3.5 h-3.5 ${
+                  proxyConfig?.enabled ? 'text-emerald-400' : 'text-slate-400'
+                }`}
+              />
+              <span className="hidden sm:inline">
+                {proxyConfig?.enabled ? 'PROXY ROTATOR' : 'DIRECT IP'}
+              </span>
+              <span className="sm:hidden">
+                {proxyConfig?.enabled ? 'PROXY' : 'DIRECT'}
+              </span>
+            </button>
+          )}
+
           {session && ['admin', 'partner', 'reseller'].includes(session.role) && (
             <button
               id="btn-open-key-manager"

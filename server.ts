@@ -22,6 +22,13 @@ import {
   updateKeyStatus,
   verifyAndLogin,
 } from './src/server/licenseStore.ts';
+import {
+  getProxyConfig,
+  getNextProxyUrl,
+  setProxyConfig,
+  testProxyLatency,
+  ProxyConfig,
+} from './src/server/proxyEngine.ts';
 import { AuthSession, UserRole } from './src/types/auth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,48 +73,80 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-// Global Job State
-let activeTask = false;
-let stopRequested = false;
+// -------------------------------------------------------------
+// MULTI-TASKING & PER-KEY SESSION ARCHITECTURE
+// -------------------------------------------------------------
 
-const currentJob: JobState = {
-  status: 'idle',
-  phone: '',
-  phone_fmt: '',
-  mode: 'single',
-  delay: 60,
-  selected_platforms: ALL_PLATFORMS.map((p) => p.id),
-  current_round: 0,
-  stats: {
-    total: 0,
-    success: 0,
-    limit: 0,
-    fail: 0,
-  },
-  logs: [],
-};
+interface UserTaskState {
+  active: boolean;
+  stopRequested: boolean;
+  job: JobState;
+}
 
-const sseClients: express.Response[] = [];
+const userTasks: Map<string, UserTaskState> = new Map();
+const sseClients: Map<string, express.Response[]> = new Map();
 
-function broadcastEvent(data: any) {
+function getUserTask(sessionKey: string): UserTaskState {
+  if (!userTasks.has(sessionKey)) {
+    userTasks.set(sessionKey, {
+      active: false,
+      stopRequested: false,
+      job: {
+        status: 'idle',
+        phone: '',
+        phone_fmt: '',
+        targets: [],
+        currentTargetIndex: 0,
+        totalTargets: 0,
+        mode: 'single',
+        delay: 60,
+        selected_platforms: ALL_PLATFORMS.map((p) => p.id),
+        current_round: 0,
+        stats: {
+          total: 0,
+          success: 0,
+          limit: 0,
+          fail: 0,
+        },
+        logs: [],
+      },
+    });
+  }
+  return userTasks.get(sessionKey)!;
+}
+
+function broadcastToUser(sessionKey: string, data: any) {
   const payload = `data: ${JSON.stringify(data)}\n\n`;
-  for (let i = sseClients.length - 1; i >= 0; i--) {
-    const res = sseClients[i];
+  const clients = sseClients.get(sessionKey) || [];
+  for (let i = clients.length - 1; i >= 0; i--) {
+    const res = clients[i];
     try {
       res.write(payload);
     } catch {
-      sseClients.splice(i, 1);
+      clients.splice(i, 1);
     }
   }
 }
 
-async function runWorker(phone62: string, mode: 'single' | 'loop' | 'pick', delay: number, chosenIds: number[]) {
-  activeTask = true;
-  stopRequested = false;
+// Worker supporting Multi-Target Queues + Multi-Session
+async function runWorkerForUser(
+  sessionKey: string,
+  phones: string[],
+  mode: 'single' | 'loop' | 'pick',
+  delay: number,
+  chosenIds: number[]
+) {
+  const userState = getUserTask(sessionKey);
+  userState.active = true;
+  userState.stopRequested = false;
 
+  const currentJob = userState.job;
   currentJob.status = 'running';
-  currentJob.phone = phone62;
-  currentJob.phone_fmt = fmtplus(phone62);
+  currentJob.targets = phones;
+  currentJob.totalTargets = phones.length;
+  currentJob.currentTargetIndex = 1;
+  currentJob.phone = phones[0] || '';
+  currentJob.phone_fmt = fmtplus(phones[0] || '');
   currentJob.mode = mode;
   currentJob.delay = delay;
   currentJob.selected_platforms = chosenIds;
@@ -115,112 +154,150 @@ async function runWorker(phone62: string, mode: 'single' | 'loop' | 'pick', dela
   currentJob.stats = { total: 0, success: 0, limit: 0, fail: 0 };
   currentJob.logs = [];
 
-  broadcastEvent({
+  const proxyConfig = getProxyConfig();
+
+  broadcastToUser(sessionKey, {
     type: 'job_start',
     job: {
-      phone_fmt: fmtplus(phone62),
+      phone_fmt: fmtplus(phones[0] || ''),
+      targets: phones,
+      total_targets: phones.length,
       mode,
       delay,
       total_platforms: chosenIds.length,
+      proxy_enabled: proxyConfig.enabled,
     },
   });
 
-  let roundNo = 0;
-
   try {
-    while (!stopRequested) {
-      roundNo += 1;
-      currentJob.current_round = roundNo;
+    for (let tIdx = 0; tIdx < phones.length; tIdx++) {
+      if (userState.stopRequested) break;
 
-      const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const targetPhone = phones[tIdx];
+      currentJob.currentTargetIndex = tIdx + 1;
+      currentJob.phone = targetPhone;
+      currentJob.phone_fmt = fmtplus(targetPhone);
 
-      broadcastEvent({
-        type: 'round_start',
-        round: roundNo,
-        timestamp: nowStr,
-      });
-
-      let roundSuccess = 0;
-
-      for (const idx of chosenIds) {
-        if (stopRequested) break;
-
-        const platform = ALL_PLATFORMS.find((p) => p.id === idx);
-        if (!platform) continue;
-
-        let result;
-        try {
-          result = await platform.handler(phone62);
-        } catch (err: any) {
-          result = { status: 0, text: err?.message || 'Error' };
-        }
-
-        const { status: verdictStatus, detail } = evaluateVerdict(result.status, result.text);
-
-        currentJob.stats.total += 1;
-        if (verdictStatus === 'SUCCESS') {
-          currentJob.stats.success += 1;
-          roundSuccess += 1;
-        } else if (verdictStatus === 'LIMIT') {
-          currentJob.stats.limit += 1;
-        } else {
-          currentJob.stats.fail += 1;
-        }
-
-        const logEntry: LogEntry = {
+      // Log target change if multiple targets
+      if (phones.length > 1) {
+        const queueEntry: LogEntry = {
           id: Math.random().toString(36).substring(2, 9),
-          round: roundNo,
-          platform_id: idx,
-          platform_name: platform.name,
-          status: verdictStatus,
-          detail,
+          round: currentJob.current_round,
+          platform_id: 0,
+          platform_name: 'TARGET QUEUE',
+          status: 'INFO',
+          detail: `[Target ${tIdx + 1}/${phones.length}] Memproses antrian: ${fmtplus(targetPhone)}`,
           timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          target: fmtplus(targetPhone),
         };
+        currentJob.logs.push(queueEntry);
+        broadcastToUser(sessionKey, {
+          type: 'target_change',
+          currentIndex: tIdx + 1,
+          totalTargets: phones.length,
+          phone: fmtplus(targetPhone),
+          entry: queueEntry,
+        });
+      }
 
-        currentJob.logs.push(logEntry);
-        if (currentJob.logs.length > 500) {
-          currentJob.logs.shift();
+      let roundNo = 0;
+
+      while (!userState.stopRequested) {
+        roundNo += 1;
+        currentJob.current_round = roundNo;
+
+        const nowStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        broadcastToUser(sessionKey, {
+          type: 'round_start',
+          round: roundNo,
+          target: fmtplus(targetPhone),
+          timestamp: nowStr,
+        });
+
+        let roundSuccess = 0;
+
+        for (const idx of chosenIds) {
+          if (userState.stopRequested) break;
+
+          const platform = ALL_PLATFORMS.find((p) => p.id === idx);
+          if (!platform) continue;
+
+          let result;
+          try {
+            result = await platform.handler(targetPhone);
+          } catch (err: any) {
+            result = { status: 0, text: err?.message || 'Error' };
+          }
+
+          const { status: verdictStatus, detail } = evaluateVerdict(result.status, result.text);
+
+          currentJob.stats.total += 1;
+          if (verdictStatus === 'SUCCESS') {
+            currentJob.stats.success += 1;
+            roundSuccess += 1;
+          } else if (verdictStatus === 'LIMIT') {
+            currentJob.stats.limit += 1;
+          } else {
+            currentJob.stats.fail += 1;
+          }
+
+          const logEntry: LogEntry = {
+            id: Math.random().toString(36).substring(2, 9),
+            round: roundNo,
+            platform_id: idx,
+            platform_name: platform.name,
+            status: verdictStatus,
+            detail,
+            timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            target: fmtplus(targetPhone),
+          };
+
+          currentJob.logs.push(logEntry);
+          if (currentJob.logs.length > 500) {
+            currentJob.logs.shift();
+          }
+
+          broadcastToUser(sessionKey, {
+            type: 'log',
+            entry: logEntry,
+            stats: currentJob.stats,
+          });
+
+          await new Promise((r) => setTimeout(r, 600));
         }
 
-        broadcastEvent({
-          type: 'log',
-          entry: logEntry,
+        broadcastToUser(sessionKey, {
+          type: 'round_complete',
+          round: roundNo,
+          round_success: roundSuccess,
           stats: currentJob.stats,
         });
 
-        await new Promise((r) => setTimeout(r, 600));
-      }
+        if (mode !== 'loop' || userState.stopRequested) {
+          break;
+        }
 
-      broadcastEvent({
-        type: 'round_complete',
-        round: roundNo,
-        round_success: roundSuccess,
-        stats: currentJob.stats,
-      });
-
-      if (mode !== 'loop' || stopRequested) {
-        break;
-      }
-
-      // Countdown loop
-      for (let elapsed = 0; elapsed < delay; elapsed++) {
-        if (stopRequested) break;
-        broadcastEvent({
-          type: 'countdown',
-          remaining: delay - elapsed,
-        });
-        await new Promise((r) => setTimeout(r, 1000));
+        // Countdown loop between rounds
+        for (let elapsed = 0; elapsed < delay; elapsed++) {
+          if (userState.stopRequested) break;
+          broadcastToUser(sessionKey, {
+            type: 'countdown',
+            remaining: delay - elapsed,
+          });
+          await new Promise((r) => setTimeout(r, 1000));
+        }
       }
     }
   } catch (err: any) {
-    broadcastEvent({
+    broadcastToUser(sessionKey, {
       type: 'error',
       message: err?.message || 'Unexpected worker error',
     });
   } finally {
-    activeTask = false;
-    currentJob.status = stopRequested ? 'stopped' : 'completed';
-    broadcastEvent({
+    userState.active = false;
+    currentJob.status = userState.stopRequested ? 'stopped' : 'completed';
+    broadcastToUser(sessionKey, {
       type: 'job_complete',
       status: currentJob.status,
       stats: currentJob.stats,
@@ -328,7 +405,7 @@ app.post('/api/auth/keys/generate', requireAuth, (req, res) => {
   res.json(result);
 });
 
-// 6. Manage Key Action (ban, unban, reset_ip, delete, extend)
+// 6. Action on Key (extend, ban, reset_ip, unban)
 app.post('/api/auth/keys/action', requireAuth, (req, res) => {
   const session = (req as any).userSession as AuthSession;
   const { targetKey, action, extendDays = 7 } = req.body || {};
@@ -337,7 +414,14 @@ app.post('/api/auth/keys/action', requireAuth, (req, res) => {
     return res.status(400).json({ success: false, message: 'Parameter tidak lengkap.' });
   }
 
-  const result = updateKeyStatus(session.role, session.key, targetKey, action, extendDays);
+  const result = updateKeyStatus(
+    session.role,
+    session.key,
+    String(targetKey),
+    action,
+    Number(extendDays)
+  );
+
   if (!result.success) {
     return res.status(403).json(result);
   }
@@ -349,7 +433,7 @@ app.post('/api/auth/keys/action', requireAuth, (req, res) => {
 app.get('/api/auth/telegram/config', requireAuth, (req, res) => {
   const session = (req as any).userSession as AuthSession;
   if (session.role !== 'admin') {
-    return res.status(403).json({ success: false, message: 'Hanya admin yang boleh mengakses.' });
+    return res.status(403).json({ success: false, message: 'Akses terbatas untuk Admin.' });
   }
   const config = loadTelegramConfig();
   res.json({ success: true, config });
@@ -358,50 +442,56 @@ app.get('/api/auth/telegram/config', requireAuth, (req, res) => {
 app.post('/api/auth/telegram/config', requireAuth, (req, res) => {
   const session = (req as any).userSession as AuthSession;
   if (session.role !== 'admin') {
-    return res.status(403).json({ success: false, message: 'Hanya admin yang boleh mengakses.' });
+    return res.status(403).json({ success: false, message: 'Akses terbatas untuk Admin.' });
   }
+
   const { botToken = '', adminChatId = '', enabled = false } = req.body || {};
-  const config = { botToken: botToken.trim(), adminChatId: adminChatId.trim(), enabled: Boolean(enabled) };
-  saveTelegramConfig(config);
+  saveTelegramConfig({
+    botToken: String(botToken).trim(),
+    adminChatId: String(adminChatId).trim(),
+    enabled: Boolean(enabled),
+  });
+
   restartTelegramPolling();
-  res.json({ success: true, config });
+
+  res.json({ success: true, message: 'Konfigurasi Bot Telegram tersimpan!' });
 });
 
 // -------------------------------------------------------------
-// TELEGRAM BOT LONG-POLLING ENGINE
+// PROXY ROTATOR API ENDPOINTS (NOMOR 5)
 // -------------------------------------------------------------
+
+app.get('/api/proxy/config', requireAuth, (req, res) => {
+  const config = getProxyConfig();
+  res.json({ success: true, config });
+});
+
+app.post('/api/proxy/config', requireAuth, (req, res) => {
+  const { enabled, mode, customProxies } = req.body || {};
+  const updated = setProxyConfig({
+    ...(enabled !== undefined ? { enabled: Boolean(enabled) } : {}),
+    ...(mode !== undefined ? { mode } : {}),
+    ...(customProxies !== undefined && Array.isArray(customProxies) ? { customProxies } : {}),
+  });
+
+  res.json({ success: true, message: 'Konfigurasi Proxy Rotator diperbarui', config: updated });
+});
+
+app.post('/api/proxy/test', requireAuth, async (req, res) => {
+  const { proxyUrl } = req.body || {};
+  if (!proxyUrl) {
+    return res.status(400).json({ success: false, message: 'Masukkan URL Proxy (http://ip:port)' });
+  }
+  const result = await testProxyLatency(proxyUrl);
+  res.json(result);
+});
+
+// -------------------------------------------------------------
+// TELEGRAM BOT POLLING WORKER
+// -------------------------------------------------------------
+
 let telegramPollingInterval: any = null;
 let lastUpdateId = 0;
-
-async function pollTelegramBot() {
-  const config = loadTelegramConfig();
-  if (!config.enabled || !config.botToken) return;
-
-  try {
-    const url = `https://api.telegram.org/bot${config.botToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=10`;
-    const res = await fetch(url);
-    const data = await res.json();
-
-    if (data.ok && Array.isArray(data.result)) {
-      for (const update of data.result) {
-        lastUpdateId = update.update_id;
-        const msg = update.message;
-        if (!msg || !msg.text) continue;
-
-        const chatId = String(msg.chat.id);
-        // If adminChatId is specified, verify sender
-        if (config.adminChatId && chatId !== config.adminChatId) {
-          continue;
-        }
-
-        const text = msg.text.trim();
-        await handleTelegramCommand(config.botToken, chatId, text);
-      }
-    }
-  } catch (err) {
-    // Network or API error
-  }
-}
 
 async function sendTelegramMessage(token: string, chatId: string, text: string) {
   try {
@@ -414,19 +504,51 @@ async function sendTelegramMessage(token: string, chatId: string, text: string) 
         parse_mode: 'HTML',
       }),
     });
-  } catch (err) {
-    console.error('[!] Failed to send Telegram message:', err);
+  } catch {
+    // ignore
   }
 }
 
-async function handleTelegramCommand(token: string, chatId: string, rawText: string) {
-  const parts = rawText.split(' ');
+async function pollTelegramBot() {
+  const config = loadTelegramConfig();
+  if (!config.enabled || !config.botToken) return;
+
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${config.botToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=3`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!res.ok) return;
+
+    const data = (await res.json()) as any;
+    if (data.ok && Array.isArray(data.result)) {
+      for (const update of data.result) {
+        lastUpdateId = Math.max(lastUpdateId, update.update_id);
+        const msg = update.message;
+        if (!msg || !msg.text) continue;
+
+        const chatId = String(msg.chat.id);
+        if (config.adminChatId && chatId !== config.adminChatId) {
+          await sendTelegramMessage(config.botToken, chatId, '⛔ <b>Akses Ditolak:</b> Akun Anda bukan Admin terdaftar.');
+          continue;
+        }
+
+        await handleTelegramCommand(config.botToken, chatId, msg.text.trim());
+      }
+    }
+  } catch {
+    // timeout
+  }
+}
+
+async function handleTelegramCommand(token: string, chatId: string, text: string) {
+  const parts = text.split(/\s+/);
   const cmd = parts[0].toLowerCase();
 
   if (cmd === '/start' || cmd === '/help') {
-    const reply = `👑 <b>SPAMMER PRO VIP BOT</b>\n\n` +
-      `<b>Daftar Perintah:</b>\n` +
-      `• <code>/genkey [role] [durasi_hari] [catatan]</code>\n` +
+    const reply = `👑 <b>SPAMMER PRO VIP - BOT ADMIN</b>\n\n` +
+      `Gunakan perintah berikut untuk mengelola key:\n` +
+      `• <code>/genkey [role] [hari] [note]</code> - Buat Key Baru\n` +
       `  Contoh: <code>/genkey user 7 BudiSantoso</code>\n` +
       `• <code>/cekkey [key]</code> - Cek masa aktif\n` +
       `• <code>/extend [key] [hari]</code> - Tambah durasi\n` +
@@ -516,35 +638,62 @@ function restartTelegramPolling() {
 }
 
 // -------------------------------------------------------------
-// OTP ENGINE REST APIS
+// OTP ENGINE REST APIS (MULTI-SESSION + MULTI-TARGET)
 // -------------------------------------------------------------
 
 app.get('/api/info', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  let sessionKey = 'default';
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    const sess = activeSessions.get(token);
+    if (sess) sessionKey = sess.key;
+  }
+
+  const userState = getUserTask(sessionKey);
   const platformsMeta = ALL_PLATFORMS.map((p) => ({
     id: p.id,
     name: p.name,
     category: p.category,
   }));
 
-  res.json({
+  const proxyConfig = getProxyConfig();
+
+  return res.json({
     platforms: platformsMeta,
-    active: activeTask,
-    job_status: currentJob.status,
-    job: currentJob,
+    active: userState.active,
+    job_status: userState.job.status,
+    job: userState.job,
+    proxy_config: proxyConfig,
   });
 });
 
-app.post('/api/spam/start', (req, res) => {
-  if (activeTask) {
-    return res.status(400).json({ success: false, message: 'Proses sedang berjalan!' });
+app.post('/api/spam/start', requireAuth, (req, res) => {
+  const session = (req as any).userSession as AuthSession;
+  const userState = getUserTask(session.key);
+
+  if (userState.active) {
+    return res.status(400).json({ success: false, message: 'Proses Anda masih berjalan!' });
   }
 
-  const { phone = '', mode = 'single', delay = 60, platforms = [] } = req.body || {};
-  const p62 = normalizePhone(phone);
-  if (!p62) {
+  const { phone = '', phones = [], mode = 'single', delay = 60, platforms = [] } = req.body || {};
+
+  // Support both single phone string and multiple phones array
+  const rawList: string[] = [];
+  if (Array.isArray(phones) && phones.length > 0) {
+    rawList.push(...phones);
+  } else if (typeof phone === 'string' && phone.trim()) {
+    // Parse line breaks or commas
+    const split = phone.split(/[\n,;]+/).map((s) => s.trim()).filter(Boolean);
+    rawList.push(...split);
+  }
+
+  const normalizedList = rawList.map(normalizePhone).filter((p) => p.length >= 10 && p.length <= 15);
+
+  if (normalizedList.length === 0) {
     return res.status(400).json({
       success: false,
-      message: 'Format nomor telepon tidak valid. Gunakan 08xx / 62xx / +62xx',
+      message: 'Format nomor telepon tidak valid. Masukkan nomor (08xx / 62xx).',
     });
   }
 
@@ -558,41 +707,70 @@ app.post('/api/spam/start', (req, res) => {
     chosenIds = ALL_PLATFORMS.map((p) => p.id);
   }
 
-  runWorker(p62, mode as any, validDelay, chosenIds);
+  runWorkerForUser(session.key, normalizedList, mode as any, validDelay, chosenIds);
 
   res.json({
     success: true,
-    message: `Proses dimulai ke ${fmtplus(p62)}`,
-    target: fmtplus(p62),
+    message: `Proses dimulai ke ${normalizedList.length} target nomor.`,
+    targets: normalizedList.map(fmtplus),
     mode,
     platforms_count: chosenIds.length,
   });
 });
 
-app.post('/api/spam/stop', (req, res) => {
-  if (!activeTask) {
-    return res.status(400).json({ success: false, message: 'Tidak ada proses yang sedang berjalan.' });
+app.post('/api/spam/stop', requireAuth, (req, res) => {
+  const session = (req as any).userSession as AuthSession;
+  const userState = getUserTask(session.key);
+
+  if (!userState.active) {
+    return res.status(400).json({ success: false, message: 'Tidak ada proses aktif pada akun Anda.' });
   }
-  stopRequested = true;
-  res.json({ success: true, message: 'Sinyal pemberhentian telah dikirim!' });
+  userState.stopRequested = true;
+  res.json({ success: true, message: 'Sinyal pemberhentian proses Anda telah dikirim!' });
 });
 
 app.get('/api/spam/stream', (req, res) => {
+  const tokenQuery = (req.query.token as string) || '';
+  let sessionKey = 'default';
+  if (tokenQuery) {
+    const sess = activeSessions.get(tokenQuery);
+    if (sess) sessionKey = sess.key;
+  } else {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      const sess = activeSessions.get(token);
+      if (sess) sessionKey = sess.key;
+    }
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
-  const initPayload = JSON.stringify({ type: 'init', job: currentJob, active: activeTask });
+  const userState = getUserTask(sessionKey);
+  const initPayload = JSON.stringify({
+    type: 'init',
+    job: userState.job,
+    active: userState.active,
+    proxy: getProxyConfig(),
+  });
   res.write(`data: ${initPayload}\n\n`);
 
-  sseClients.push(res);
+  if (!sseClients.has(sessionKey)) {
+    sseClients.set(sessionKey, []);
+  }
+  const clientList = sseClients.get(sessionKey)!;
+  clientList.push(res);
 
   req.on('close', () => {
-    const idx = sseClients.indexOf(res);
+    const list = sseClients.get(sessionKey);
+    if (!list) return;
+    const idx = list.indexOf(res);
     if (idx !== -1) {
-      sseClients.splice(idx, 1);
+      list.splice(idx, 1);
     }
   });
 });
