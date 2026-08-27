@@ -84,9 +84,19 @@ export default function App() {
     { id: 6, name: 'Rumah123', category: 'Property' },
     { id: 7, name: 'Paper.id', category: 'Fintech' },
     { id: 8, name: 'DuniaGames', category: 'Gaming' },
+    { id: 9, name: 'Gojek', category: 'Ride / Food' },
+    { id: 10, name: 'Grab', category: 'Ride / Food' },
+    { id: 11, name: 'Shopee', category: 'E-Commerce' },
+    { id: 12, name: 'Tokopedia', category: 'E-Commerce' },
+    { id: 13, name: 'WhatsApp', category: 'Messaging' },
+    { id: 14, name: 'Telegram', category: 'Messaging' },
+    { id: 15, name: 'Instagram', category: 'Social Media' },
+    { id: 16, name: 'Twitter (X)', category: 'Social Media' },
+    { id: 17, name: 'Google / Gmail', category: 'Big Tech' },
+    { id: 18, name: 'Microsoft', category: 'Big Tech' },
   ]);
 
-  const [selectedPlatforms, setSelectedPlatforms] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8]);
+  const [selectedPlatforms, setSelectedPlatforms] = useState<number[]>([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
 
   // Target Input States (Single vs Batch)
   const [targetType, setTargetType] = useState<'single' | 'batch'>('single');

