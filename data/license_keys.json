@@ -1,0 +1,12 @@
+[
+  {
+    "key": "SPAMMER-ADMIN-MASTER-VIP",
+    "role": "admin",
+    "createdBy": "system",
+    "createdAt": 1724750000000,
+    "expiresAt": null,
+    "durationDays": -1,
+    "isBanned": false,
+    "note": "Master Admin Owner Key"
+  }
+]

@@ -98,8 +98,8 @@ export function createLicenseKey(
   creatorRole: UserRole,
   creatorKey: string,
   targetRole: UserRole,
-  durationHoursOrDays: number, // e.g. 1 (hour), 1 (day), 7 (days), 30 (days), -1 (lifetime)
-  isHours: boolean = false,
+  durationValue: number, // e.g. 30 (mins), 1 (hour), 7 (days), -1 (lifetime)
+  unit: 'minute' | 'hour' | 'day' | 'month' | 'lifetime' = 'day',
   note?: string
 ): { success: boolean; key?: LicenseKey; message?: string } {
   // Check permission hierarchy
@@ -119,13 +119,24 @@ export function createLicenseKey(
 
   const now = Date.now();
   let expiresAt: number | null = null;
+  let durationDesc = '';
 
-  if (durationHoursOrDays === -1) {
+  if (unit === 'lifetime' || durationValue === -1) {
     expiresAt = null; // Lifetime
-  } else if (isHours) {
-    expiresAt = now + durationHoursOrDays * 60 * 60 * 1000;
+    durationDesc = 'Lifetime';
+  } else if (unit === 'minute') {
+    expiresAt = now + durationValue * 60 * 1000;
+    durationDesc = `${durationValue} Menit`;
+  } else if (unit === 'hour') {
+    expiresAt = now + durationValue * 60 * 60 * 1000;
+    durationDesc = `${durationValue} Jam`;
+  } else if (unit === 'month') {
+    expiresAt = now + durationValue * 30 * 24 * 60 * 60 * 1000;
+    durationDesc = `${durationValue} Bulan`;
   } else {
-    expiresAt = now + durationHoursOrDays * 24 * 60 * 60 * 1000;
+    // default days
+    expiresAt = now + durationValue * 24 * 60 * 60 * 1000;
+    durationDesc = `${durationValue} Hari`;
   }
 
   const newKey: LicenseKey = {
@@ -134,9 +145,9 @@ export function createLicenseKey(
     createdBy: creatorKey,
     createdAt: now,
     expiresAt,
-    durationDays: isHours ? 0 : durationHoursOrDays,
+    durationDays: unit === 'day' ? durationValue : (unit === 'lifetime' || durationValue === -1 ? -1 : 0),
     isBanned: false,
-    note: note || `Dibuat oleh ${creatorRole.toUpperCase()}`,
+    note: note || `Dibuat oleh ${creatorRole.toUpperCase()} (${durationDesc})`,
   };
 
   keys.push(newKey);

@@ -92,16 +92,24 @@ export const KeyManagerModal: React.FC<KeyManagerModalProps> = ({
     setLoading(true);
     setGeneratedKeyResult(null);
 
-    let durationDays = 7;
-    let isHours = false;
+    let durationValue = 7;
+    let unit: 'minute' | 'hour' | 'day' | 'month' | 'lifetime' = 'day';
 
-    if (durationOption === '1h') {
-      durationDays = 1;
-      isHours = true;
+    if (durationOption === '30m') {
+      durationValue = 30;
+      unit = 'minute';
+    } else if (durationOption === '1h') {
+      durationValue = 1;
+      unit = 'hour';
+    } else if (durationOption === '2h') {
+      durationValue = 2;
+      unit = 'hour';
     } else if (durationOption === 'lifetime') {
-      durationDays = -1;
+      durationValue = -1;
+      unit = 'lifetime';
     } else {
-      durationDays = Number(durationOption) || 7;
+      durationValue = Number(durationOption) || 7;
+      unit = 'day';
     }
 
     try {
@@ -113,8 +121,8 @@ export const KeyManagerModal: React.FC<KeyManagerModalProps> = ({
         },
         body: JSON.stringify({
           role: targetRole,
-          duration: durationDays,
-          isHours,
+          duration: durationValue,
+          unit,
           note: noteInput.trim(),
         }),
       });
@@ -303,12 +311,14 @@ export const KeyManagerModal: React.FC<KeyManagerModalProps> = ({
                     onChange={(e) => setDurationOption(e.target.value)}
                     className="w-full bg-[#050810] border border-amber-500/30 rounded-xl px-3.5 py-2.5 text-xs text-amber-100 font-bold focus:outline-none focus:ring-2 focus:ring-amber-400"
                   >
-                    <option value="1h" className="bg-[#0b101b]">1 Jam (Trial/Tes)</option>
-                    <option value="1" className="bg-[#0b101b]">1 Hari (24 Jam)</option>
-                    <option value="7" className="bg-[#0b101b]">7 Hari (1 Minggu)</option>
-                    <option value="30" className="bg-[#0b101b]">30 Hari (1 Bulan)</option>
+                    <option value="30m" className="bg-[#0b101b]">⚡ 30 Menit (Tes / Quick Trial)</option>
+                    <option value="1h" className="bg-[#0b101b]">⚡ 1 Jam (Trial / Tes)</option>
+                    <option value="2h" className="bg-[#0b101b]">⚡ 2 Jam (Trial)</option>
+                    <option value="1" className="bg-[#0b101b]">📅 1 Hari (24 Jam)</option>
+                    <option value="7" className="bg-[#0b101b]">📅 7 Hari (1 Minggu)</option>
+                    <option value="30" className="bg-[#0b101b]">📅 30 Hari (1 Bulan)</option>
                     {session.role === 'admin' && (
-                      <option value="lifetime" className="bg-[#0b101b]">Permanen / Lifetime</option>
+                      <option value="lifetime" className="bg-[#0b101b]">👑 Permanen / Lifetime</option>
                     )}
                   </select>
                 </div>

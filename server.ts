@@ -387,14 +387,14 @@ app.get('/api/auth/keys', requireAuth, (req, res) => {
 // 5. Generate Key
 app.post('/api/auth/keys/generate', requireAuth, (req, res) => {
   const session = (req as any).userSession as AuthSession;
-  const { role = 'user', duration = 7, isHours = false, note = '' } = req.body || {};
+  const { role = 'user', duration = 7, unit = 'day', note = '' } = req.body || {};
 
   const result = createLicenseKey(
     session.role,
     session.key,
     role as UserRole,
     Number(duration),
-    Boolean(isHours),
+    unit,
     String(note)
   );
 
@@ -547,11 +547,17 @@ async function handleTelegramCommand(token: string, chatId: string, text: string
 
   if (cmd === '/start' || cmd === '/help') {
     const reply = `👑 <b>SPAMMER PRO VIP - BOT ADMIN</b>\n\n` +
-      `Gunakan perintah berikut untuk mengelola key:\n` +
-      `• <code>/genkey [role] [hari] [note]</code> - Buat Key Baru\n` +
-      `  Contoh: <code>/genkey user 7 BudiSantoso</code>\n` +
+      `Gunakan perintah berikut untuk mengelola key:\n\n` +
+      `• <code>/genkey [role] [durasi] [note]</code>\n` +
+      `  <i>Contoh Durasi Menit & Jam:</i>\n` +
+      `  - <code>/genkey user 30m PembeliTest</code> (30 Menit)\n` +
+      `  - <code>/genkey user 1h Pembeli1Jam</code> (1 Jam)\n` +
+      `  - <code>/genkey user 2h</code> (2 Jam)\n` +
+      `  - <code>/genkey user 7d</code> / <code>/genkey user 7</code> (7 Hari)\n` +
+      `  - <code>/genkey user 30d</code> / <code>/genkey user 1m</code> (1 Bulan)\n` +
+      `  - <code>/genkey user -1</code> (Lifetime)\n\n` +
       `• <code>/cekkey [key]</code> - Cek masa aktif\n` +
-      `• <code>/extend [key] [hari]</code> - Tambah durasi\n` +
+      `• <code>/extend [key] [durasi]</code> - Tambah durasi (contoh: <code>/extend SPAMMER-XXX 1h</code> atau <code>7d</code>)\n` +
       `• <code>/resetkey [key]</code> - Reset IP/Device lock\n` +
       `• <code>/bankey [key]</code> - Blokir key`;
     await sendTelegramMessage(token, chatId, reply);
@@ -560,16 +566,47 @@ async function handleTelegramCommand(token: string, chatId: string, text: string
 
   if (cmd === '/genkey') {
     const role = (parts[1] || 'user').toLowerCase() as UserRole;
-    const dur = Number(parts[2]) || 7;
+    const rawDur = (parts[2] || '7').toLowerCase();
     const note = parts.slice(3).join(' ') || 'Via Bot Telegram';
 
-    const result = createLicenseKey('admin', 'TELEGRAM_BOT', role, dur, false, note);
+    let durationValue = 7;
+    let unit: 'minute' | 'hour' | 'day' | 'month' | 'lifetime' = 'day';
+    let labelDurasi = '';
+
+    if (rawDur.endsWith('m') && !rawDur.endsWith('mo') && !rawDur.includes('month')) {
+      // e.g. 30m, 15m
+      durationValue = parseInt(rawDur.replace('m', '')) || 30;
+      unit = 'minute';
+      labelDurasi = `${durationValue} Menit`;
+    } else if (rawDur.endsWith('h') || rawDur.endsWith('jam')) {
+      // e.g. 1h, 2h, 1jam
+      durationValue = parseInt(rawDur.replace(/h|jam/g, '')) || 1;
+      unit = 'hour';
+      labelDurasi = `${durationValue} Jam`;
+    } else if (rawDur.endsWith('mo') || rawDur.endsWith('bln') || rawDur.endsWith('bulan')) {
+      // e.g. 1mo, 1bulan
+      durationValue = parseInt(rawDur.replace(/mo|bln|bulan/g, '')) || 1;
+      unit = 'month';
+      labelDurasi = `${durationValue} Bulan`;
+    } else if (rawDur === '-1' || rawDur === 'lifetime' || rawDur === 'perm') {
+      durationValue = -1;
+      unit = 'lifetime';
+      labelDurasi = 'Lifetime (Permanen)';
+    } else {
+      // e.g. 7, 7d, 7hari
+      durationValue = parseInt(rawDur.replace(/d|hari/g, '')) || 7;
+      unit = 'day';
+      labelDurasi = `${durationValue} Hari`;
+    }
+
+    const result = createLicenseKey('admin', 'TELEGRAM_BOT', role, durationValue, unit, note);
     if (result.success && result.key) {
-      const expStr = result.key.expiresAt ? new Date(result.key.expiresAt).toLocaleDateString('id-ID') : 'Lifetime';
+      const expStr = result.key.expiresAt ? new Date(result.key.expiresAt).toLocaleString('id-ID') : 'Lifetime (Permanen)';
       const reply = `✅ <b>KEY BERHASIL DIBUAT!</b>\n\n` +
         `🔑 <b>Key:</b> <code>${result.key.key}</code>\n` +
         `👤 <b>Role:</b> <code>${result.key.role.toUpperCase()}</code>\n` +
-        `⏳ <b>Masa Aktif:</b> ${dur} Hari (${expStr})\n` +
+        `⏳ <b>Masa Aktif:</b> ${labelDurasi}\n` +
+        `📅 <b>Kedaluwarsa:</b> ${expStr}\n` +
         `📝 <b>Catatan:</b> ${result.key.note}\n\n` +
         `<i>Format Login: Masukkan key di halaman web spammer</i>`;
       await sendTelegramMessage(token, chatId, reply);
